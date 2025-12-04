@@ -71,6 +71,74 @@ git checkout tags/v1.0.0
 
 ---
 
-## 后续版本
+## v1.1.0 - 修复金融企业ROCE计算 (2024-12-04)
 
-在这里记录后续的版本更新...
+**重要更新：修复了银行等金融企业的ROCE计算问题**
+
+### 主要改进
+
+#### 1. 金融企业ROCE计算修复 ✅
+- **问题**：银行、保险等金融企业的资产负债表中 `total_cur_liab`（流动负债）为 null
+- **原因**：金融企业的资产负债表结构与普通企业不同，没有"流动负债"概念
+- **解决方案**：
+  ```
+  普通企业：资本使用 = 总资产 - 流动负债
+  金融企业：资本使用 = 股东权益 (total_hldr_eqy_exc_min_int)
+  ```
+- **结果**：所有84只股票（包括银行股）都能正确计算ROCE
+
+#### 2. 利润指标三级回退机制 ✅
+- **优先级**：`ebit` → `operate_profit` → `total_profit`
+- **适用场景**：
+  - 普通企业：使用EBIT（息税前利润）
+  - 金融企业：EBIT通常为null，自动使用营业利润或利润总额
+- **日志提示**：会显示使用了哪个利润指标
+
+#### 3. API调用优化 ✅
+- 移除固定报告期限制，自动获取最新财报数据
+- 优化批处理大小：
+  - 历史数据：10只/批
+  - 因子数据：5只/批（降低以避免API限流）
+- 批次间延迟增加到800ms
+
+#### 4. 数据处理改进 ✅
+- 移除ROCE填充逻辑：缺失数据显示为"-"，不参与权重计算
+- 只有同时具备股息率和ROCE的股票才参与双因子加权
+- 添加详细日志输出，便于调试
+
+#### 5. 文档完善 ✅
+- README中详细说明金融企业特殊处理逻辑
+- 列出所有使用的Tushare字段名
+- 说明ROCE计算的三级回退机制
+
+### 新增文件
+- `test-bank.js` - 银行股数据获取测试工具
+- `VERSION_HISTORY.md` - 版本历史记录
+
+### 技术细节
+```javascript
+// 资产负债表字段
+fields: 'ts_code,end_date,total_assets,total_cur_liab,total_hldr_eqy_exc_min_int'
+
+// 金融企业判断逻辑
+if (!currentLiab && equityIdx >= 0) {
+  const totalEquity = balanceData.items[0][equityIdx];
+  if (totalEquity) {
+    currentLiab = totalAssets - totalEquity;
+    console.log(`${code} using total equity method (financial company)`);
+  }
+}
+```
+
+### 如何从v1.0.0升级
+```bash
+git pull origin main
+npm install  # 如果有依赖更新
+```
+
+### 已知改进
+- 所有股票都能正确显示ROCE（除非真的没有财报数据）
+- 银行股不再显示"-"
+- 权重分配更加合理
+
+---
