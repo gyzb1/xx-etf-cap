@@ -48,12 +48,13 @@ async function batchProcess(items, processor, batchSize = 10) {
   const results = [];
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
-    console.log(`Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(items.length / batchSize)} (${i + batch.length}/${items.length})`);
-    const batchResults = await Promise.all(batch.map(processor));
+    console.log(`\nProcessing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(items.length / batchSize)} (${i + batch.length}/${items.length})`);
+    const batchResults = await Promise.all(batch.map((item, batchIndex) => processor(item, i + batchIndex)));
     results.push(...batchResults);
     // Add delay between batches to avoid rate limit
     if (i + batchSize < items.length) {
-      await delay(500); // Reduced from 1000ms to 500ms
+      console.log(`Waiting 800ms before next batch...`);
+      await delay(800); // Increased from 500ms to 800ms
     }
   }
   return results;
@@ -207,14 +208,27 @@ async function getFinancialIndicator(tsCode, endDate) {
   }
 }
 
-// Get balance sheet data (for ROCE calculation)
-async function getBalanceSheet(tsCode, period) {
+// Get balance sheet data (for total assets and current liabilities)
+async function getBalanceSheet(tsCode) {
   try {
+    // Get the latest available balance sheet data (don't specify end_date)
     const data = await callTushareAPI('balancesheet', {
       ts_code: tsCode,
-      period: period,
-      fields: 'ts_code,end_date,total_assets,total_cur_liab'
+      fields: 'ts_code,end_date,total_assets,total_cur_liab,total_hldr_eqy_exc_min_int'
     });
+    
+    // Return only the latest record
+    if (data && data.items && data.items.length > 0) {
+      const fields = data.fields;
+      const endDateIdx = fields.indexOf('end_date');
+      // Sort by end_date descending
+      const sortedItems = data.items.sort((a, b) => b[endDateIdx].localeCompare(a[endDateIdx]));
+      return {
+        fields: data.fields,
+        items: [sortedItems[0]] // Return only the latest
+      };
+    }
+    
     return data;
   } catch (error) {
     console.error(`Error fetching balance sheet for ${tsCode}:`, error.message);
@@ -223,13 +237,26 @@ async function getBalanceSheet(tsCode, period) {
 }
 
 // Get income statement data (for EBIT)
-async function getIncomeStatement(tsCode, period) {
+async function getIncomeStatement(tsCode) {
   try {
+    // Get the latest available income statement data (don't specify end_date)
     const data = await callTushareAPI('income', {
       ts_code: tsCode,
-      period: period,
       fields: 'ts_code,end_date,ebit,operate_profit,total_profit'
     });
+    
+    // Return only the latest record
+    if (data && data.items && data.items.length > 0) {
+      const fields = data.fields;
+      const endDateIdx = fields.indexOf('end_date');
+      // Sort by end_date descending
+      const sortedItems = data.items.sort((a, b) => b[endDateIdx].localeCompare(a[endDateIdx]));
+      return {
+        fields: data.fields,
+        items: [sortedItems[0]] // Return only the latest
+      };
+    }
+    
     return data;
   } catch (error) {
     console.error(`Error fetching income statement for ${tsCode}:`, error.message);
@@ -322,16 +349,27 @@ function calculateDualFactorWeights(stocksFactors) {
   console.log(`  With ROCE only: ${withRoceOnly.length}`);
   console.log(`  With neither: ${withNeither.length}`);
   
-  // Strategy: Use available factors, fallback to equal weight for stocks with no data
-  const processedStocks = stocksFactors.map(s => {
+  // Only process stocks with valid ROCE data
+  const validStocks = stocksFactors.filter(s => s.roce !== null && !isNaN(s.roce));
+  
+  console.log(`  Using ${validStocks.length} stocks with valid ROCE for weight calculation`);
+  
+  if (validStocks.length === 0) {
+    console.warn('No valid stocks with ROCE data');
+    // Return equal weights for all stocks
+    const equalWeight = 1 / stocksFactors.length;
+    const weights = {};
+    stocksFactors.forEach(s => {
+      weights[s.code] = equalWeight;
+    });
+    return {
+      weights: weights,
+      processedFactors: stocksFactors
+    };
+  }
+  
+  const processedStocks = validStocks.map(s => {
     let dividendYield = s.dividendYield || 0;
-    let roce = s.roce;
-    
-    // If ROCE is missing, use average ROCE of stocks with data
-    if (roce === null || isNaN(roce)) {
-      const validRoces = stocksFactors.filter(x => x.roce !== null && !isNaN(x.roce)).map(x => x.roce);
-      roce = validRoces.length > 0 ? validRoces.reduce((a, b) => a + b, 0) / validRoces.length : 0;
-    }
     
     // If dividend yield is 0, use a small value to avoid complete exclusion
     if (dividendYield === 0) {
@@ -341,7 +379,7 @@ function calculateDualFactorWeights(stocksFactors) {
     return {
       code: s.code,
       dividendYield: dividendYield,
-      roce: roce
+      roce: s.roce
     };
   });
   
@@ -377,7 +415,11 @@ function calculateDualFactorWeights(stocksFactors) {
   
   console.log(`Calculated weights for ${Object.keys(weights).length} stocks`);
   
-  return weights;
+  // Return both weights and processed factors (with filled values)
+  return {
+    weights: weights,
+    processedFactors: processedStocks
+  };
 }
 
 // Calculate ETF net value
@@ -491,31 +533,17 @@ app.post('/api/backtest-etf', async (req, res) => {
     }, 10); // Process 10 stocks at a time
     
     // Step 3: Fetch factor data (dividend yield and ROCE) for all stocks
-    // Determine the latest financial report period based on end date
-    const year = parseInt(endDate.substring(0, 4));
-    const month = parseInt(endDate.substring(4, 6));
-    let reportPeriod;
+    console.log(`\nFetching factor data for ${uniqueStockCodes.length} stocks...`);
+    console.log('Using latest available financial reports (no date restriction)');
     
-    if (month >= 10) {
-      reportPeriod = `${year}0930`; // Q3
-    } else if (month >= 7) {
-      reportPeriod = `${year}0630`; // Q2
-    } else if (month >= 4) {
-      reportPeriod = `${year}0331`; // Q1
-    } else {
-      reportPeriod = `${year - 1}1231`; // Previous year Q4
-    }
-    
-    console.log(`Using financial report period: ${reportPeriod}`);
-    
-    // Fetch factor data with batch processing
-    console.log('Fetching factor data (dividend yield and ROCE)...');
-    const stocksFactors = await batchProcess(uniqueStockCodes, async (code) => {
+    const stocksFactors = await batchProcess(uniqueStockCodes, async (code, index) => {
       try {
+        console.log(`\n[${index + 1}/${uniqueStockCodes.length}] Processing ${code}...`);
+        
         const [dailyBasicInfo, incomeData, balanceData] = await Promise.all([
           getDailyBasic(code, endDate),
-          getIncomeStatement(code, reportPeriod),
-          getBalanceSheet(code, reportPeriod)
+          getIncomeStatement(code),
+          getBalanceSheet(code)
         ]);
         
         let dividendYield = 0;
@@ -554,10 +582,21 @@ app.post('/api/backtest-etf', async (req, res) => {
         if (incomeData && incomeData.items && incomeData.items.length > 0) {
           const fields = incomeData.fields;
           const ebitIdx = fields.indexOf('ebit');
-          if (ebitIdx >= 0) {
+          const operateProfitIdx = fields.indexOf('operate_profit');
+          const totalProfitIdx = fields.indexOf('total_profit');
+          
+          // Try EBIT first, then operate_profit, then total_profit (for financial companies)
+          if (ebitIdx >= 0 && incomeData.items[0][ebitIdx]) {
             ebit = incomeData.items[0][ebitIdx];
+          } else if (operateProfitIdx >= 0 && incomeData.items[0][operateProfitIdx]) {
+            ebit = incomeData.items[0][operateProfitIdx]; // Use operating profit as fallback
+            console.log(`${code} using operate_profit instead of EBIT`);
+          } else if (totalProfitIdx >= 0 && incomeData.items[0][totalProfitIdx]) {
+            ebit = incomeData.items[0][totalProfitIdx]; // Use total profit as last resort
+            console.log(`${code} using total_profit instead of EBIT`);
           }
-          console.log(`${code} EBIT: ${ebit}`);
+          
+          console.log(`${code} EBIT/Profit: ${ebit}`);
         } else {
           console.log(`${code} no income data`);
         }
@@ -566,8 +605,22 @@ app.post('/api/backtest-etf', async (req, res) => {
           const fields = balanceData.fields;
           const assetsIdx = fields.indexOf('total_assets');
           const liabIdx = fields.indexOf('total_cur_liab');
+          const totalLiabIdx = fields.indexOf('total_liab');
+          const equityIdx = fields.indexOf('total_hldr_eqy_exc_min_int');
+          
           if (assetsIdx >= 0) totalAssets = balanceData.items[0][assetsIdx];
           if (liabIdx >= 0) currentLiab = balanceData.items[0][liabIdx];
+          
+          // For financial companies (banks, insurance), current_liab is null
+          // Use total equity as capital employed instead
+          if (!currentLiab && equityIdx >= 0) {
+            const totalEquity = balanceData.items[0][equityIdx];
+            if (totalEquity) {
+              currentLiab = totalAssets - totalEquity; // Calculate implied "non-equity" portion
+              console.log(`${code} using total equity method (financial company)`);
+            }
+          }
+          
           console.log(`${code} Assets: ${totalAssets}, Current Liab: ${currentLiab}`);
         } else {
           console.log(`${code} no balance data`);
@@ -598,14 +651,14 @@ app.post('/api/backtest-etf', async (req, res) => {
           marketCap: null
         };
       }
-    }, 8); // Process 8 stocks at a time for factor data
+    }, 5); // Process 5 stocks at a time for factor data (reduced to avoid rate limits)
     
     // Fetch ETF data
     console.log('Fetching ETF data...');
     const etfData = await getFundDailyData('512890.SH', startDate, endDate);
     
     // Step 4: Calculate dual-factor weights
-    const weights = calculateDualFactorWeights(stocksFactors);
+    const { weights, processedFactors } = calculateDualFactorWeights(stocksFactors);
     
     console.log(`Calculated weights for ${Object.keys(weights).length} stocks`);
     
@@ -621,11 +674,15 @@ app.post('/api/backtest-etf', async (req, res) => {
         let industry = '-';
         let marketCap = '-';
         const weight = weights[code] || 0;
-        const factors = stocksFactors.find(f => f.code === code);
         
-        // Get market cap from factors data (already fetched)
-        if (factors && factors.marketCap) {
-          marketCap = (factors.marketCap / 10000).toFixed(2); // Convert to 亿元
+        // Get original factors (for market cap)
+        const originalFactors = stocksFactors.find(f => f.code === code);
+        // Get processed factors (with filled ROCE values)
+        const processedFactor = processedFactors.find(f => f.code === code);
+        
+        // Get market cap from original factors data (already fetched)
+        if (originalFactors && originalFactors.marketCap) {
+          marketCap = (originalFactors.marketCap / 10000).toFixed(2); // Convert to 亿元
         }
         
         if (basicInfo && basicInfo.items && basicInfo.items.length > 0) {
@@ -652,8 +709,8 @@ app.post('/api/backtest-etf', async (req, res) => {
           industry: industry,
           marketCap: marketCap,
           weight: (weight * 100).toFixed(2), // Convert to percentage
-          dividendYield: factors ? factors.dividendYield.toFixed(2) : '-',
-          roce: factors && factors.roce !== null ? factors.roce.toFixed(2) : '-'
+          dividendYield: originalFactors ? originalFactors.dividendYield.toFixed(2) : '-',
+          roce: originalFactors && originalFactors.roce !== null ? originalFactors.roce.toFixed(2) : '-'
         };
       } catch (error) {
         console.error(`Error fetching info for ${code}:`, error.message);
