@@ -236,6 +236,34 @@ async function getBalanceSheet(tsCode) {
   }
 }
 
+// Get cashflow statement data (for FCF calculation)
+async function getCashflowStatement(tsCode) {
+  try {
+    // Get the latest available cashflow statement data
+    const data = await callTushareAPI('cashflow', {
+      ts_code: tsCode,
+      fields: 'ts_code,end_date,n_cashflow_act,fix_intan_other_asset_dispo_cash'
+    });
+    
+    // Return only the latest record
+    if (data && data.items && data.items.length > 0) {
+      const fields = data.fields;
+      const endDateIdx = fields.indexOf('end_date');
+      // Sort by end_date descending
+      const sortedItems = data.items.sort((a, b) => b[endDateIdx].localeCompare(a[endDateIdx]));
+      return {
+        fields: data.fields,
+        items: [sortedItems[0]] // Return only the latest
+      };
+    }
+    
+    return data;
+  } catch (error) {
+    console.error(`Error fetching cashflow for ${tsCode}:`, error.message);
+    return null;
+  }
+}
+
 // Get income statement data (for EBIT)
 async function getIncomeStatement(tsCode) {
   try {
@@ -334,28 +362,20 @@ function calculatePortfolioNetValue(stocksData, weights) {
   return netValueData;
 }
 
-// Calculate dual-factor weights (Dividend Yield + ROCE)
+// Calculate market cap weights (市值加权)
 function calculateDualFactorWeights(stocksFactors) {
   console.log(`\nCalculating weights for ${stocksFactors.length} stocks...`);
   
   // Count stocks by data availability
-  const withBothFactors = stocksFactors.filter(s => s.dividendYield > 0 && s.roce !== null && !isNaN(s.roce));
-  const withDivOnly = stocksFactors.filter(s => s.dividendYield > 0 && (s.roce === null || isNaN(s.roce)));
-  const withRoceOnly = stocksFactors.filter(s => (s.dividendYield === 0 || !s.dividendYield) && s.roce !== null && !isNaN(s.roce));
-  const withNeither = stocksFactors.filter(s => (s.dividendYield === 0 || !s.dividendYield) && (s.roce === null || isNaN(s.roce)));
+  const validStocks = stocksFactors.filter(s => 
+    s.marketCap !== null && !isNaN(s.marketCap) && s.marketCap > 0
+  );
   
-  console.log(`  With both factors: ${withBothFactors.length}`);
-  console.log(`  With dividend only: ${withDivOnly.length}`);
-  console.log(`  With ROCE only: ${withRoceOnly.length}`);
-  console.log(`  With neither: ${withNeither.length}`);
-  
-  // Only process stocks with valid ROCE data
-  const validStocks = stocksFactors.filter(s => s.roce !== null && !isNaN(s.roce));
-  
-  console.log(`  Using ${validStocks.length} stocks with valid ROCE for weight calculation`);
+  console.log(`  Valid stocks with market cap data: ${validStocks.length}`);
+  console.log(`  Missing data: ${stocksFactors.length - validStocks.length}`);
   
   if (validStocks.length === 0) {
-    console.warn('No valid stocks with ROCE data');
+    console.warn('No valid stocks with market cap data');
     // Return equal weights for all stocks
     const equalWeight = 1 / stocksFactors.length;
     const weights = {};
@@ -368,57 +388,20 @@ function calculateDualFactorWeights(stocksFactors) {
     };
   }
   
-  const processedStocks = validStocks.map(s => {
-    let dividendYield = s.dividendYield || 0;
-    
-    // If dividend yield is 0, use a small value to avoid complete exclusion
-    if (dividendYield === 0) {
-      dividendYield = 0.01; // Small positive value
-    }
-    
-    return {
-      code: s.code,
-      dividendYield: dividendYield,
-      roce: s.roce
-    };
-  });
-  
-  // Normalize factors to 0-1 range
-  const divYields = processedStocks.map(s => s.dividendYield);
-  const roces = processedStocks.map(s => s.roce);
-  
-  const minDiv = Math.min(...divYields);
-  const maxDiv = Math.max(...divYields);
-  const minRoce = Math.min(...roces);
-  const maxRoce = Math.max(...roces);
-  
-  const rangeDiv = maxDiv - minDiv || 1;
-  const rangeRoce = maxRoce - minRoce || 1;
-  
-  // Calculate composite score (equal weight for both factors)
-  const scores = processedStocks.map(s => {
-    const normDiv = (s.dividendYield - minDiv) / rangeDiv;
-    const normRoce = (s.roce - minRoce) / rangeRoce;
-    return {
-      code: s.code,
-      score: (normDiv + normRoce) / 2  // Average of both factors
-    };
-  });
-  
-  // Calculate weights proportional to scores
-  const totalScore = scores.reduce((sum, s) => sum + s.score, 0);
+  // Calculate weights directly proportional to market cap
+  const totalMarketCap = validStocks.reduce((sum, s) => sum + s.marketCap, 0);
   const weights = {};
   
-  scores.forEach(s => {
-    weights[s.code] = totalScore > 0 ? s.score / totalScore : 1 / scores.length;
+  validStocks.forEach(s => {
+    weights[s.code] = totalMarketCap > 0 ? s.marketCap / totalMarketCap : 1 / validStocks.length;
   });
   
   console.log(`Calculated weights for ${Object.keys(weights).length} stocks`);
   
-  // Return both weights and processed factors (with filled values)
+  // Return both weights and processed factors
   return {
     weights: weights,
-    processedFactors: processedStocks
+    processedFactors: validStocks
   };
 }
 
@@ -544,114 +527,41 @@ app.post('/api/backtest-etf', async (req, res) => {
       try {
         console.log(`\n[${index + 1}/${uniqueStockCodes.length}] Processing ${code}...`);
         
-        const [dailyBasicInfo, incomeData, balanceData] = await Promise.all([
-          getDailyBasic(code, endDate),
-          getIncomeStatement(code),
-          getBalanceSheet(code)
-        ]);
+        // 获取市净率PB
+        const dailyBasicInfo = await getDailyBasic(code, endDate);
         
-        let dividendYield = 0;
-        let roce = null;
-        
-        // Extract dividend yield and market cap from daily basic
+        let pb = null;
         let marketCap = null;
+        
+        // 从daily_basic获取PB和市值
         if (dailyBasicInfo && dailyBasicInfo.items && dailyBasicInfo.items.length > 0) {
           const fields = dailyBasicInfo.fields;
-          const dvYieldIdx = fields.indexOf('dv_ratio');
-          const dvTtmIdx = fields.indexOf('dv_ttm');
+          const pbIdx = fields.indexOf('pb');
           const totalMvIdx = fields.indexOf('total_mv');
           
-          // Try dv_ratio first, then dv_ttm
-          if (dvYieldIdx >= 0 && dailyBasicInfo.items[0][dvYieldIdx]) {
-            dividendYield = dailyBasicInfo.items[0][dvYieldIdx];
-          } else if (dvTtmIdx >= 0 && dailyBasicInfo.items[0][dvTtmIdx]) {
-            dividendYield = dailyBasicInfo.items[0][dvTtmIdx];
+          if (pbIdx >= 0 && dailyBasicInfo.items[0][pbIdx]) {
+            pb = dailyBasicInfo.items[0][pbIdx];
           }
           
-          // Get market cap
           if (totalMvIdx >= 0 && dailyBasicInfo.items[0][totalMvIdx]) {
             marketCap = dailyBasicInfo.items[0][totalMvIdx];
           }
           
-          console.log(`${code} dividend yield: ${dividendYield}, market cap: ${marketCap}`);
+          console.log(`${code} PB: ${pb}, Market Cap: ${marketCap}`);
         } else {
           console.log(`${code} no daily basic data`);
         }
         
-        // Calculate ROCE = EBIT / (Total Assets - Current Liabilities)
-        let ebit = null;
-        let totalAssets = null;
-        let currentLiab = null;
-        
-        if (incomeData && incomeData.items && incomeData.items.length > 0) {
-          const fields = incomeData.fields;
-          const ebitIdx = fields.indexOf('ebit');
-          const operateProfitIdx = fields.indexOf('operate_profit');
-          const totalProfitIdx = fields.indexOf('total_profit');
-          
-          // Try EBIT first, then operate_profit, then total_profit (for financial companies)
-          if (ebitIdx >= 0 && incomeData.items[0][ebitIdx]) {
-            ebit = incomeData.items[0][ebitIdx];
-          } else if (operateProfitIdx >= 0 && incomeData.items[0][operateProfitIdx]) {
-            ebit = incomeData.items[0][operateProfitIdx]; // Use operating profit as fallback
-            console.log(`${code} using operate_profit instead of EBIT`);
-          } else if (totalProfitIdx >= 0 && incomeData.items[0][totalProfitIdx]) {
-            ebit = incomeData.items[0][totalProfitIdx]; // Use total profit as last resort
-            console.log(`${code} using total_profit instead of EBIT`);
-          }
-          
-          console.log(`${code} EBIT/Profit: ${ebit}`);
-        } else {
-          console.log(`${code} no income data`);
-        }
-        
-        if (balanceData && balanceData.items && balanceData.items.length > 0) {
-          const fields = balanceData.fields;
-          const assetsIdx = fields.indexOf('total_assets');
-          const liabIdx = fields.indexOf('total_cur_liab');
-          const totalLiabIdx = fields.indexOf('total_liab');
-          const equityIdx = fields.indexOf('total_hldr_eqy_exc_min_int');
-          
-          if (assetsIdx >= 0) totalAssets = balanceData.items[0][assetsIdx];
-          if (liabIdx >= 0) currentLiab = balanceData.items[0][liabIdx];
-          
-          // For financial companies (banks, insurance), current_liab is null
-          // Use total equity as capital employed instead
-          if (!currentLiab && equityIdx >= 0) {
-            const totalEquity = balanceData.items[0][equityIdx];
-            if (totalEquity) {
-              currentLiab = totalAssets - totalEquity; // Calculate implied "non-equity" portion
-              console.log(`${code} using total equity method (financial company)`);
-            }
-          }
-          
-          console.log(`${code} Assets: ${totalAssets}, Current Liab: ${currentLiab}`);
-        } else {
-          console.log(`${code} no balance data`);
-        }
-        
-        if (ebit && totalAssets && currentLiab) {
-          const capitalEmployed = totalAssets - currentLiab;
-          if (capitalEmployed > 0) {
-            roce = (ebit / capitalEmployed) * 100; // Convert to percentage
-            console.log(`${code} ROCE: ${roce.toFixed(2)}%`);
-          }
-        } else {
-          console.log(`${code} cannot calculate ROCE - missing data`);
-        }
-        
         return {
           code: code,
-          dividendYield: dividendYield || 0,
-          roce: roce,
+          pb: pb,
           marketCap: marketCap
         };
       } catch (error) {
         console.error(`Error fetching factors for ${code}:`, error.message);
         return {
           code: code,
-          dividendYield: 0,
-          roce: null,
+          pb: null,
           marketCap: null
         };
       }
@@ -713,8 +623,7 @@ app.post('/api/backtest-etf', async (req, res) => {
           industry: industry,
           marketCap: marketCap,
           weight: (weight * 100).toFixed(2), // Convert to percentage
-          dividendYield: originalFactors ? originalFactors.dividendYield.toFixed(2) : '-',
-          roce: originalFactors && originalFactors.roce !== null ? originalFactors.roce.toFixed(2) : '-'
+          pb: originalFactors && originalFactors.pb ? originalFactors.pb.toFixed(2) : '-'
         };
       } catch (error) {
         console.error(`Error fetching info for ${code}:`, error.message);
@@ -724,8 +633,7 @@ app.post('/api/backtest-etf', async (req, res) => {
           industry: '-',
           marketCap: '-',
           weight: '0.00',
-          dividendYield: '-',
-          roce: '-'
+          pb: '-'
         };
       }
     });
@@ -1039,87 +947,42 @@ app.post('/api/backtest-dynamic', async (req, res) => {
     for (let period of portfolioPeriods) {
       console.log(`\nPeriod: ${period.reportDate}`);
       
-      // Fetch factor data for this period's stocks
+      // Fetch factor data for this period's stocks (market cap for weighting)
       const stocksFactors = await batchProcess(period.stockCodes, async (code, index) => {
         try {
-          const [dailyBasicInfo, incomeData, balanceData] = await Promise.all([
-            getDailyBasic(code, period.reportDate),
-            getIncomeStatement(code),
-            getBalanceSheet(code)
-          ]);
+          const dailyBasicInfo = await getDailyBasic(code, period.reportDate);
           
-          let dividendYield = 0;
-          let roce = null;
+          let pb = null;
+          let marketCap = null;
           
-          // Extract dividend yield
+          // 从daily_basic获取PB和市值
           if (dailyBasicInfo && dailyBasicInfo.items && dailyBasicInfo.items.length > 0) {
             const fields = dailyBasicInfo.fields;
-            const dvYieldIdx = fields.indexOf('dv_ratio');
-            const dvTtmIdx = fields.indexOf('dv_ttm');
+            const pbIdx = fields.indexOf('pb');
+            const totalMvIdx = fields.indexOf('total_mv');
             
-            if (dvYieldIdx >= 0 && dailyBasicInfo.items[0][dvYieldIdx]) {
-              dividendYield = dailyBasicInfo.items[0][dvYieldIdx];
-            } else if (dvTtmIdx >= 0 && dailyBasicInfo.items[0][dvTtmIdx]) {
-              dividendYield = dailyBasicInfo.items[0][dvTtmIdx];
-            }
-          }
-          
-          // Calculate ROCE
-          let ebit = null;
-          let totalAssets = null;
-          let currentLiab = null;
-          
-          if (incomeData && incomeData.items && incomeData.items.length > 0) {
-            const fields = incomeData.fields;
-            const ebitIdx = fields.indexOf('ebit');
-            const operateProfitIdx = fields.indexOf('operate_profit');
-            const totalProfitIdx = fields.indexOf('total_profit');
-            
-            if (ebitIdx >= 0 && incomeData.items[0][ebitIdx]) {
-              ebit = incomeData.items[0][ebitIdx];
-            } else if (operateProfitIdx >= 0 && incomeData.items[0][operateProfitIdx]) {
-              ebit = incomeData.items[0][operateProfitIdx];
-            } else if (totalProfitIdx >= 0 && incomeData.items[0][totalProfitIdx]) {
-              ebit = incomeData.items[0][totalProfitIdx];
-            }
-          }
-          
-          if (balanceData && balanceData.items && balanceData.items.length > 0) {
-            const fields = balanceData.fields;
-            const totalAssetsIdx = fields.indexOf('total_assets');
-            const currentLiabIdx = fields.indexOf('total_cur_liab');
-            const equityIdx = fields.indexOf('total_hldr_eqy_exc_min_int');
-            
-            if (totalAssetsIdx >= 0) {
-              totalAssets = balanceData.items[0][totalAssetsIdx];
+            if (pbIdx >= 0 && dailyBasicInfo.items[0][pbIdx]) {
+              pb = dailyBasicInfo.items[0][pbIdx];
             }
             
-            if (currentLiabIdx >= 0 && balanceData.items[0][currentLiabIdx]) {
-              currentLiab = balanceData.items[0][currentLiabIdx];
-            } else if (equityIdx >= 0 && balanceData.items[0][equityIdx]) {
-              currentLiab = totalAssets - balanceData.items[0][equityIdx];
+            if (totalMvIdx >= 0 && dailyBasicInfo.items[0][totalMvIdx]) {
+              marketCap = dailyBasicInfo.items[0][totalMvIdx];
             }
-          }
-          
-          // Calculate ROCE
-          if (ebit && totalAssets && currentLiab !== null) {
-            const capitalEmployed = totalAssets - currentLiab;
-            if (capitalEmployed > 0) {
-              roce = (ebit / capitalEmployed) * 100;
-            }
+            
+            console.log(`${code} Market Cap: ${marketCap}`);
           }
           
           return {
             code: code,
-            dividendYield: dividendYield,
-            roce: roce
+            pb: pb,
+            marketCap: marketCap
           };
         } catch (error) {
           console.error(`Error fetching factors for ${code}:`, error.message);
           return {
             code: code,
-            dividendYield: 0,
-            roce: null
+            pb: null,
+            marketCap: null
           };
         }
       }, 8);
@@ -1345,9 +1208,9 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Root path - serve backtest.html (unified backtest page)
+// Root path - serve index.html (unified backtest page)
 app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/public/backtest.html');
+  res.sendFile(__dirname + '/public/index.html');
 });
 
 app.listen(PORT, () => {
