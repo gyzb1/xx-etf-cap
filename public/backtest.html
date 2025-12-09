@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETF回测系统 - 双因子策略</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 36px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+
+        .mode-selector {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+            justify-content: center;
+        }
+
+        .mode-btn {
+            flex: 1;
+            max-width: 400px;
+            padding: 30px;
+            background: white;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: 3px solid transparent;
+        }
+
+        .mode-btn:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .mode-btn.active {
+            border-color: #667eea;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+        }
+
+        .mode-btn h3 {
+            font-size: 24px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .mode-btn p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .mode-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .mode-badge.static {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .mode-badge.dynamic {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .form-section {
+            display: none;
+        }
+
+        .form-section.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 100%;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 40px;
+            color: #667eea;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #f3f4f6;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: none;
+        }
+
+        .results.active {
+            display: block;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 25px;
+            border-radius: 12px;
+            color: white;
+            text-align: center;
+        }
+
+        .stat-card h3 {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 10px;
+        }
+
+        .stat-card p {
+            font-size: 32px;
+            font-weight: 700;
+        }
+
+        .stat-card.positive {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        }
+
+        .stat-card.negative {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        }
+
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            height: 400px;
+        }
+
+        .period-card {
+            background: #f9fafb;
+            padding: 25px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            border-left: 4px solid #667eea;
+        }
+
+        .period-card h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+
+        .period-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .period-info-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .period-info-item strong {
+            display: block;
+            color: #667eea;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+
+        .holdings-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .holding-item {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .holding-code {
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .holding-weight {
+            color: #666;
+        }
+
+        .changes-section {
+            margin-top: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+        }
+
+        .changes-summary {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .change-stat {
+            text-align: center;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .change-stat.added {
+            background: #d1fae5;
+            border: 2px solid #10b981;
+        }
+
+        .change-stat.removed {
+            background: #fee2e2;
+            border: 2px solid #ef4444;
+        }
+
+        .change-stat.unchanged {
+            background: #e0e7ff;
+            border: 2px solid #6366f1;
+        }
+
+        .change-stat h4 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .change-stat p {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .change-stat.added p {
+            color: #10b981;
+        }
+
+        .change-stat.removed p {
+            color: #ef4444;
+        }
+
+        .change-stat.unchanged p {
+            color: #6366f1;
+        }
+
+        .stocks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 8px;
+            margin-top: 15px;
+        }
+
+        .stock-item {
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .stock-item.added {
+            background: #d1fae5;
+            border-left: 3px solid #10b981;
+        }
+
+        .stock-item.removed {
+            background: #fee2e2;
+            border-left: 3px solid #ef4444;
+        }
+
+        .stock-code {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .stock-weight {
+            color: #666;
+            font-size: 11px;
+        }
+
+        .toggle-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+
+        .toggle-btn:hover {
+            background: #5568d3;
+        }
+
+        .all-holdings {
+            display: none;
+            margin-top: 15px;
+        }
+
+        .all-holdings.active {
+            display: block;
+        }
+
+        .error {
+            display: none;
+            background: #fee;
+            color: #c33;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+
+        .error.active {
+            display: block;
+        }
+
+        .stocks-info-section {
+            margin-top: 30px;
+        }
+
+        .stocks-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        .stocks-table th,
+        .stocks-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .stocks-table th {
+            background: #f9fafb;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .stocks-table tr:hover {
+            background: #f9fafb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 ETF回测系统</h1>
+            <p>512890红利低波ETF · 双因子策略（股息率 + ROCE）</p>
+        </div>
+
+        <!-- Mode Selector -->
+        <div class="mode-selector">
+            <div class="mode-btn active" onclick="selectMode('static')">
+                <span class="mode-badge static">静态回测</span>
+                <h3>📊 静态回测</h3>
+                <p>使用最新披露的持仓，回测历史表现。适合评估当前持仓的历史有效性。</p>
+            </div>
+            <div class="mode-btn" onclick="selectMode('dynamic')">
+                <span class="mode-badge dynamic">动态回测</span>
+                <h3>🔄 动态回测</h3>
+                <p>跟随ETF实际披露节奏调仓，模拟真实投资场景。更贴近实际收益。</p>
+            </div>
+        </div>
+
+        <!-- Static Backtest Form -->
+        <div class="card form-section active" id="staticForm">
+            <h2 style="margin-bottom: 20px; color: #333;">📊 静态回测设置</h2>
+            <div class="form-group">
+                <label for="staticStartDate">开始日期</label>
+                <input type="date" id="staticStartDate" value="2024-01-01">
+            </div>
+            <div class="form-group">
+                <label for="staticEndDate">结束日期</label>
+                <input type="date" id="staticEndDate">
+            </div>
+            <button class="btn" id="staticBtn" onclick="runStaticBacktest()">开始静态回测</button>
+        </div>
+
+        <!-- Dynamic Backtest Form -->
+        <div class="card form-section" id="dynamicForm">
+            <h2 style="margin-bottom: 20px; color: #333;">🔄 动态回测设置</h2>
+            <div class="form-group">
+                <label for="dynamicStartDate">开始日期</label>
+                <input type="date" id="dynamicStartDate" value="2024-01-01">
+            </div>
+            <div class="form-group">
+                <label for="dynamicEndDate">结束日期</label>
+                <input type="date" id="dynamicEndDate">
+            </div>
+            <button class="btn" id="dynamicBtn" onclick="runDynamicBacktest()">开始动态回测</button>
+        </div>
+
+        <!-- Loading -->
+        <div class="card loading" id="loading">
+            <div class="loading-spinner"></div>
+            <p id="loadingText">⏳ 正在进行回测...</p>
+            <p style="font-size: 14px; margin-top: 10px; color: #666;" id="loadingDetail">获取持仓数据 → 计算双因子权重 → 生成净值曲线</p>
+        </div>
+
+        <!-- Error -->
+        <div class="error" id="error"></div>
+
+        <!-- Results -->
+        <div class="results" id="results">
+            <div class="card">
+                <h2 style="margin-bottom: 20px; color: #333;">📈 回测结果</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>组合收益率</h3>
+                        <p id="portfolioReturn">-</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>ETF收益率</h3>
+                        <p id="etfReturn">-</p>
+                    </div>
+                    <div class="stat-card" id="outperformanceCard">
+                        <h3>超额收益</h3>
+                        <p id="outperformance">-</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3 id="statsLabel">持仓数量</h3>
+                        <p id="statsValue">-</p>
+                    </div>
+                </div>
+
+                <div class="chart-container">
+                    <canvas id="netValueChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Dynamic Periods -->
+            <div class="card" id="periodsSection" style="display: none;">
+                <h2 style="margin-bottom: 20px; color: #333;">📊 调仓周期详情</h2>
+                <div id="periodsContainer"></div>
+            </div>
+
+            <!-- Static Holdings -->
+            <div class="card stocks-info-section" id="holdingsSection" style="display: none;">
+                <h2 style="margin-bottom: 20px; color: #333;">📋 持仓详情</h2>
+                <table class="stocks-table">
+                    <thead>
+                        <tr>
+                            <th>股票名称</th>
+                            <th>权重</th>
+                            <th>股息率</th>
+                            <th>ROCE</th>
+                            <th>行业</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stocksTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let currentMode = 'static';
+
+        // Set default end date to today
+        document.getElementById('staticEndDate').valueAsDate = new Date();
+        document.getElementById('dynamicEndDate').valueAsDate = new Date();
+
+        function selectMode(mode) {
+            currentMode = mode;
+            
+            // Update mode buttons
+            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.closest('.mode-btn').classList.add('active');
+            
+            // Update forms
+            document.querySelectorAll('.form-section').forEach(form => form.classList.remove('active'));
+            document.getElementById(mode + 'Form').classList.add('active');
+            
+            // Hide results
+            document.getElementById('results').classList.remove('active');
+            document.getElementById('error').classList.remove('active');
+        }
+
+        async function runStaticBacktest() {
+            const startDate = document.getElementById('staticStartDate').value.replace(/-/g, '');
+            const endDate = document.getElementById('staticEndDate').value.replace(/-/g, '');
+
+            showLoading('静态回测');
+            hideError();
+            hideResults();
+
+            try {
+                const response = await fetch('/api/backtest-etf', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ startDate, endDate })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    displayStaticResults(result.data);
+                } else {
+                    showError(result.message || '回测失败');
+                }
+            } catch (error) {
+                showError('网络错误: ' + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function runDynamicBacktest() {
+            const startDate = document.getElementById('dynamicStartDate').value.replace(/-/g, '');
+            const endDate = document.getElementById('dynamicEndDate').value.replace(/-/g, '');
+
+            showLoading('动态回测');
+            hideError();
+            hideResults();
+
+            try {
+                const response = await fetch('/api/backtest-dynamic', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ startDate, endDate })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    displayDynamicResults(result.data);
+                } else {
+                    showError(result.message || '回测失败');
+                }
+            } catch (error) {
+                showError('网络错误: ' + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function displayStaticResults(data) {
+            const { portfolio, etf, stocksInfo, statistics } = data;
+
+            // Update statistics
+            document.getElementById('portfolioReturn').textContent = statistics.portfolioReturn + '%';
+            document.getElementById('etfReturn').textContent = statistics.etfReturn + '%';
+            
+            const outperformance = (parseFloat(statistics.portfolioReturn) - parseFloat(statistics.etfReturn)).toFixed(2);
+            const outperformanceEl = document.getElementById('outperformance');
+            const outperformanceCard = document.getElementById('outperformanceCard');
+            outperformanceEl.textContent = outperformance + '%';
+            outperformanceCard.className = 'stat-card ' + (outperformance > 0 ? 'positive' : outperformance < 0 ? 'negative' : '');
+
+            document.getElementById('statsLabel').textContent = '持仓数量';
+            document.getElementById('statsValue').textContent = statistics.stockCount + ' 只';
+
+            // Draw chart
+            drawChart(portfolio, etf);
+
+            // Display holdings
+            displayHoldings(stocksInfo);
+
+            // Show results
+            document.getElementById('periodsSection').style.display = 'none';
+            document.getElementById('holdingsSection').style.display = 'block';
+            document.getElementById('results').classList.add('active');
+        }
+
+        function displayDynamicResults(data) {
+            const { portfolio, etf, periods, statistics } = data;
+
+            // Update statistics
+            document.getElementById('portfolioReturn').textContent = statistics.portfolioReturn + '%';
+            document.getElementById('etfReturn').textContent = statistics.etfReturn + '%';
+            
+            const outperformance = (parseFloat(statistics.portfolioReturn) - parseFloat(statistics.etfReturn)).toFixed(2);
+            const outperformanceEl = document.getElementById('outperformance');
+            const outperformanceCard = document.getElementById('outperformanceCard');
+            outperformanceEl.textContent = outperformance + '%';
+            outperformanceCard.className = 'stat-card ' + (outperformance > 0 ? 'positive' : outperformance < 0 ? 'negative' : '');
+
+            document.getElementById('statsLabel').textContent = '调仓次数';
+            document.getElementById('statsValue').textContent = statistics.rebalancingCount;
+
+            // Draw chart
+            drawChart(portfolio, etf);
+
+            // Display periods
+            displayPeriods(periods);
+
+            // Show results
+            document.getElementById('periodsSection').style.display = 'block';
+            document.getElementById('holdingsSection').style.display = 'none';
+            document.getElementById('results').classList.add('active');
+        }
+
+        function drawChart(portfolio, etf) {
+            const ctx = document.getElementById('netValueChart').getContext('2d');
+
+            if (chart) {
+                chart.destroy();
+            }
+
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: portfolio.map(p => formatDate(p.date)),
+                    datasets: [
+                        {
+                            label: '双因子优化组合',
+                            data: portfolio.map(p => p.netValue),
+                            borderColor: '#667eea',
+                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        },
+                        {
+                            label: '512890 ETF基准',
+                            data: etf.map(e => e.netValue),
+                            borderColor: '#f59e0b',
+                            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        title: {
+                            display: true,
+                            text: '净值曲线对比（归一化到1.0）'
+                        }
+                    },
+                    scales: {
+                        y: {
+                            title: {
+                                display: true,
+                                text: '净值'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: '日期'
+                            },
+                            ticks: {
+                                maxTicksLimit: 10
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function displayHoldings(stocksInfo) {
+            const tbody = document.getElementById('stocksTableBody');
+            tbody.innerHTML = '';
+
+            stocksInfo.forEach(stock => {
+                const row = tbody.insertRow();
+                row.innerHTML = `
+                    <td><strong>${stock.name}</strong></td>
+                    <td>${stock.weight}%</td>
+                    <td>${stock.dividendYield}%</td>
+                    <td>${stock.roce}%</td>
+                    <td>${stock.industry}</td>
+                `;
+            });
+        }
+
+        function displayPeriods(periods) {
+            const container = document.getElementById('periodsContainer');
+            container.innerHTML = '';
+
+            periods.forEach((period, index) => {
+                const periodCard = document.createElement('div');
+                periodCard.className = 'period-card';
+                
+                const holdingsHtml = period.topHoldings.map(h => 
+                    `<div class="holding-item">
+                        <span class="holding-code">${h.name}</span>
+                        <span class="holding-weight">${h.weight}%</span>
+                    </div>`
+                ).join('');
+
+                // Build changes section if available
+                let changesHtml = '';
+                if (period.changes) {
+                    const { added, removed, unchanged, addedCount, removedCount } = period.changes;
+                    
+                    changesHtml = `
+                        <div class="changes-section">
+                            <h4 style="color: #333; margin-bottom: 15px;">🔄 持仓变化</h4>
+                            <div class="changes-summary">
+                                <div class="change-stat added">
+                                    <h4>新增</h4>
+                                    <p>+${addedCount}</p>
+                                </div>
+                                <div class="change-stat removed">
+                                    <h4>移除</h4>
+                                    <p>-${removedCount}</p>
+                                </div>
+                                <div class="change-stat unchanged">
+                                    <h4>保持</h4>
+                                    <p>${unchanged}</p>
+                                </div>
+                            </div>
+                            
+                            ${addedCount > 0 ? `
+                                <div style="margin-bottom: 15px;">
+                                    <strong style="color: #10b981;">✅ 新增股票 (${addedCount}只)：</strong>
+                                    <div class="stocks-grid">
+                                        ${added.map(s => `
+                                            <div class="stock-item added">
+                                                <span class="stock-code">${s.name}</span>
+                                                <span class="stock-weight">${s.weight}%</span>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            ` : ''}
+                            
+                            ${removedCount > 0 ? `
+                                <div>
+                                    <strong style="color: #ef4444;">❌ 移除股票 (${removedCount}只)：</strong>
+                                    <div class="stocks-grid">
+                                        ${removed.map(s => `
+                                            <div class="stock-item removed">
+                                                <span class="stock-code">${s.name}</span>
+                                                <span class="stock-weight">${s.weight}%</span>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+
+                const allHoldingsId = `all-holdings-${index}`;
+                const allHoldingsHtml = `
+                    <button class="toggle-btn" onclick="toggleAllHoldings('${allHoldingsId}')">
+                        查看全部${period.stockCount}只持仓
+                    </button>
+                    <div id="${allHoldingsId}" class="all-holdings">
+                        <div class="stocks-grid">
+                            ${period.allHoldings.map(h => `
+                                <div class="stock-item" style="background: white; border: 1px solid #e5e7eb;">
+                                    <span class="stock-code">${h.name}</span>
+                                    <span class="stock-weight">${h.weight}%</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+
+                periodCard.innerHTML = `
+                    <h3>📅 周期 ${index + 1}: ${formatDate(period.reportDate)} 持仓</h3>
+                    <div class="period-info">
+                        <div class="period-info-item">
+                            <strong>报告期</strong>
+                            ${formatDate(period.reportDate)}
+                        </div>
+                        <div class="period-info-item">
+                            <strong>生效期间</strong>
+                            ${formatDate(period.startDate)} ~ ${formatDate(period.endDate)}
+                        </div>
+                        <div class="period-info-item">
+                            <strong>持仓数量</strong>
+                            ${period.stockCount} 只
+                        </div>
+                    </div>
+                    
+                    ${changesHtml}
+                    
+                    <div style="margin-top: 15px;">
+                        <strong style="color: #333;">前10大权重股票：</strong>
+                        <div class="holdings-list">
+                            ${holdingsHtml}
+                        </div>
+                    </div>
+                    
+                    ${allHoldingsHtml}
+                `;
+
+                container.appendChild(periodCard);
+            });
+        }
+
+        function toggleAllHoldings(id) {
+            const element = document.getElementById(id);
+            element.classList.toggle('active');
+            const btn = event.target;
+            if (element.classList.contains('active')) {
+                btn.textContent = '收起持仓列表';
+            } else {
+                const stockCount = element.querySelectorAll('.stock-item').length;
+                btn.textContent = `查看全部${stockCount}只持仓`;
+            }
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return '-';
+            const year = dateStr.substring(0, 4);
+            const month = dateStr.substring(4, 6);
+            const day = dateStr.substring(6, 8);
+            return `${year}-${month}-${day}`;
+        }
+
+        function showLoading(mode) {
+            document.getElementById('loadingText').textContent = `⏳ 正在进行${mode}...`;
+            document.getElementById('loading').classList.add('active');
+            document.getElementById(currentMode + 'Btn').disabled = true;
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').classList.remove('active');
+            document.getElementById(currentMode + 'Btn').disabled = false;
+        }
+
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.add('active');
+        }
+
+        function hideError() {
+            document.getElementById('error').classList.remove('active');
+        }
+
+        function hideResults() {
+            document.getElementById('results').classList.remove('active');
+        }
+    </script>
+</body>
+</html>
